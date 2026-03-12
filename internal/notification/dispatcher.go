@@ -371,8 +371,6 @@ func (d *Dispatcher) Send(ctx context.Context, n *Notification) error {
 	d.prepare(n)
 
 	d.mu.RLock()
-	defer d.mu.RUnlock()
-
 	var errs []string
 	for _, chName := range n.Channels {
 		ch, exists := d.channels[chName]
@@ -384,6 +382,7 @@ func (d *Dispatcher) Send(ctx context.Context, n *Notification) error {
 			errs = append(errs, fmt.Sprintf("%s: %v", chName, err))
 		}
 	}
+	d.mu.RUnlock()
 
 	n.SentAt = time.Now()
 	if len(errs) > 0 {
