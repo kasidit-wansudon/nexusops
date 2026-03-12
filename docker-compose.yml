@@ -1,0 +1,155 @@
+version: "3.9"
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: deploy/docker/Dockerfile.api
+    ports:
+      - "8080:8080"
+    environment:
+      - DATABASE_HOST=postgres
+      - DATABASE_PORT=5432
+      - DATABASE_NAME=nexusops
+      - DATABASE_USER=nexusops
+      - DATABASE_PASSWORD=nexusops_secret
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - GITHUB_CLIENT_ID=${GITHUB_CLIENT_ID}
+      - GITHUB_CLIENT_SECRET=${GITHUB_CLIENT_SECRET}
+      - JWT_SECRET=${JWT_SECRET:-nexusops-dev-secret}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - nexusops
+
+  runner:
+    build:
+      context: .
+      dockerfile: deploy/docker/Dockerfile.runner
+    ports:
+      - "8081:8081"
+    environment:
+      - RUNNER_PORT=8081
+      - API_URL=http://api:8080
+      - DOCKER_HOST=unix:///var/run/docker.sock
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - runner-cache:/tmp/nexusops/runner
+    depends_on:
+      - api
+    restart: unless-stopped
+    networks:
+      - nexusops
+
+  proxy:
+    build:
+      context: .
+      dockerfile: deploy/docker/Dockerfile.proxy
+    ports:
+      - "80:80"
+      - "443:443"
+      - "8082:8082"
+    environment:
+      - DEFAULT_TARGET=api:8080
+      - TLS_CERT_DIR=/etc/nexusops/certs
+      - TLS_EMAIL=${TLS_EMAIL:-admin@nexusops.dev}
+    volumes:
+      - tls-certs:/etc/nexusops/certs
+    depends_on:
+      - api
+    restart: unless-stopped
+    networks:
+      - nexusops
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: ../deploy/docker/Dockerfile.frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:8080
+      - NEXT_PUBLIC_WS_URL=ws://localhost:8080/ws
+    depends_on:
+      - api
+    restart: unless-stopped
+    networks:
+      - nexusops
+
+  postgres:
+    image: postgres:16-alpine
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_DB=nexusops
+      - POSTGRES_USER=nexusops
+      - POSTGRES_PASSWORD=nexusops_secret
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nexusops"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - nexusops
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - nexusops
+
+  prometheus:
+    image: prom/prometheus:v2.50.0
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus-data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=7d"
+    networks:
+      - nexusops
+
+  grafana:
+    image: grafana/grafana:10.3.1
+    ports:
+      - "3001:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=nexusops
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    networks:
+      - nexusops
+
+volumes:
+  postgres-data:
+  redis-data:
+  runner-cache:
+  tls-certs:
+  prometheus-data:
+  grafana-data:
+
+networks:
+  nexusops:
+    driver: bridge

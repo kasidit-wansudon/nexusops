@@ -1,0 +1,84 @@
+name: go-web-service
+version: "1.0.0"
+
+build:
+  dockerfile: Dockerfile
+  context: .
+  steps:
+    - name: tidy
+      command: go mod tidy
+    - name: vet
+      command: go vet ./...
+    - name: build
+      command: go build -trimpath -ldflags="-s -w" -o /app/server .
+  cache:
+    - /go/pkg/mod
+    - /root/.cache/go-build
+
+deploy:
+  provider: docker
+  strategy: rolling
+  replicas: 2
+  port: 8080
+  health_check:
+    path: /health
+    interval: 10s
+    timeout: 3s
+    retries: 5
+  resources:
+    cpu: "0.5"
+    memory: 256Mi
+  env:
+    APP_ENV: production
+    LOG_LEVEL: info
+    GIN_MODE: release
+
+pipeline:
+  stages:
+    - name: test
+      steps:
+        - name: lint
+          image: golangci/golangci-lint:v1.57
+          commands:
+            - golangci-lint run ./...
+          timeout: 5m
+          allow_failure: false
+
+        - name: unit-test
+          image: golang:1.22-alpine
+          commands:
+            - go test -v -race -coverprofile=coverage.out ./...
+            - go tool cover -func=coverage.out
+          artifacts:
+            - coverage.out
+          cache:
+            - /go/pkg/mod
+
+    - name: build
+      steps:
+        - name: build-image
+          image: docker:24-dind
+          commands:
+            - docker build -t go-web-service:${NEXUSOPS_COMMIT_SHA:-latest} .
+            - docker tag go-web-service:${NEXUSOPS_COMMIT_SHA:-latest} go-web-service:latest
+          depends_on:
+            - unit-test
+
+    - name: deploy
+      steps:
+        - name: deploy-staging
+          image: docker:24-dind
+          commands:
+            - echo "Deploying to staging environment..."
+            - docker compose -f docker-compose.staging.yml up -d
+          depends_on:
+            - build-image
+          env:
+            DEPLOY_ENV: staging
+
+notifications:
+  slack:
+    webhook_url: ${SLACK_WEBHOOK_URL}
+    channel: "#deployments"
+  email:
+    - team@example.com

@@ -1,0 +1,15 @@
+FROM golang:1.22-alpine AS builder
+RUN apk add --no-cache git ca-certificates
+WORKDIR /build
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /app/proxy ./cmd/proxy
+
+FROM alpine:3.19
+RUN apk add --no-cache ca-certificates tzdata curl
+RUN addgroup -g 1000 nexusops && adduser -u 1000 -G nexusops -s /bin/sh -D nexusops
+COPY --from=builder /app/proxy /usr/local/bin/proxy
+USER nexusops
+EXPOSE 80 443 8082
+ENTRYPOINT ["proxy"]

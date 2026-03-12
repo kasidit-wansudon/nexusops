@@ -1,0 +1,126 @@
+name: laravel-api
+version: "1.0.0"
+
+build:
+  dockerfile: Dockerfile
+  context: .
+  steps:
+    - name: install
+      command: composer install --no-dev --optimize-autoloader --no-interaction
+    - name: cache-config
+      command: php artisan config:cache
+    - name: cache-routes
+      command: php artisan route:cache
+  cache:
+    - vendor
+    - bootstrap/cache
+
+deploy:
+  provider: docker
+  strategy: blue-green
+  replicas: 2
+  port: 8000
+  health_check:
+    path: /api/health
+    interval: 15s
+    timeout: 5s
+    retries: 5
+  resources:
+    cpu: "0.5"
+    memory: 512Mi
+  env:
+    APP_ENV: production
+    APP_DEBUG: "false"
+    LOG_CHANNEL: stderr
+    DB_CONNECTION: pgsql
+    DB_HOST: ${DATABASE_HOST}
+    DB_PORT: "5432"
+    DB_DATABASE: ${DATABASE_NAME}
+    DB_USERNAME: ${DATABASE_USER}
+    DB_PASSWORD: ${DATABASE_PASSWORD}
+    CACHE_DRIVER: redis
+    REDIS_HOST: ${REDIS_HOST}
+
+pipeline:
+  stages:
+    - name: test
+      steps:
+        - name: lint
+          image: php:8.3-cli
+          commands:
+            - composer install --no-interaction
+            - vendor/bin/phpstan analyse --memory-limit=512M
+          cache:
+            - vendor
+          timeout: 5m
+
+        - name: unit-test
+          image: php:8.3-cli
+          commands:
+            - composer install --no-interaction
+            - php artisan test --parallel --coverage
+          env:
+            APP_ENV: testing
+            DB_CONNECTION: sqlite
+            DB_DATABASE: ":memory:"
+          artifacts:
+            - coverage/
+          cache:
+            - vendor
+          timeout: 15m
+          services:
+            - name: redis
+              image: redis:7-alpine
+
+    - name: security
+      steps:
+        - name: composer-audit
+          image: php:8.3-cli
+          commands:
+            - composer install --no-interaction
+            - composer audit
+          allow_failure: true
+          depends_on:
+            - lint
+
+    - name: build
+      steps:
+        - name: build-image
+          image: docker:24-dind
+          commands:
+            - docker build -t laravel-api:${NEXUSOPS_COMMIT_SHA:-latest} .
+            - docker tag laravel-api:${NEXUSOPS_COMMIT_SHA:-latest} laravel-api:latest
+          depends_on:
+            - unit-test
+
+    - name: migrate
+      steps:
+        - name: run-migrations
+          image: php:8.3-cli
+          commands:
+            - php artisan migrate --force
+          depends_on:
+            - build-image
+          env:
+            APP_ENV: production
+
+    - name: deploy
+      steps:
+        - name: deploy-staging
+          image: docker:24-dind
+          commands:
+            - echo "Deploying to staging environment..."
+            - docker compose -f docker-compose.staging.yml up -d
+          depends_on:
+            - run-migrations
+          env:
+            DEPLOY_ENV: staging
+
+notifications:
+  slack:
+    webhook_url: ${SLACK_WEBHOOK_URL}
+    channel: "#deployments"
+  discord:
+    webhook_url: ${DISCORD_WEBHOOK_URL}
+  email:
+    - backend-team@example.com

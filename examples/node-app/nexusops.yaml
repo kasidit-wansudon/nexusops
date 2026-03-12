@@ -1,0 +1,96 @@
+name: node-express-api
+version: "1.0.0"
+
+build:
+  dockerfile: Dockerfile
+  context: .
+  steps:
+    - name: install
+      command: npm ci
+    - name: lint
+      command: npm run lint
+    - name: build
+      command: npm run build --if-present
+  cache:
+    - node_modules
+    - .npm
+
+deploy:
+  provider: docker
+  strategy: rolling
+  replicas: 2
+  port: 3000
+  health_check:
+    path: /health
+    interval: 15s
+    timeout: 5s
+    retries: 3
+  resources:
+    cpu: "0.25"
+    memory: 256Mi
+  env:
+    NODE_ENV: production
+    LOG_LEVEL: info
+
+pipeline:
+  stages:
+    - name: test
+      steps:
+        - name: lint
+          image: node:20-alpine
+          commands:
+            - npm ci
+            - npm run lint
+          cache:
+            - node_modules
+          timeout: 5m
+
+        - name: unit-test
+          image: node:20-alpine
+          commands:
+            - npm ci
+            - npm test -- --coverage --forceExit
+          artifacts:
+            - coverage/
+          cache:
+            - node_modules
+          timeout: 10m
+
+    - name: security
+      steps:
+        - name: audit
+          image: node:20-alpine
+          commands:
+            - npm audit --audit-level=high
+          allow_failure: true
+          depends_on:
+            - lint
+
+    - name: build
+      steps:
+        - name: build-image
+          image: docker:24-dind
+          commands:
+            - docker build -t node-express-api:${NEXUSOPS_COMMIT_SHA:-latest} .
+            - docker tag node-express-api:${NEXUSOPS_COMMIT_SHA:-latest} node-express-api:latest
+          depends_on:
+            - unit-test
+
+    - name: deploy
+      steps:
+        - name: deploy-staging
+          image: docker:24-dind
+          commands:
+            - echo "Deploying to staging environment..."
+            - docker compose -f docker-compose.staging.yml up -d
+          depends_on:
+            - build-image
+          env:
+            DEPLOY_ENV: staging
+
+notifications:
+  slack:
+    webhook_url: ${SLACK_WEBHOOK_URL}
+    channel: "#deployments"
+  email:
+    - team@example.com

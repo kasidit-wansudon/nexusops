@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: nexusops
+  labels:
+    app.kubernetes.io/name: nexusops
+    app.kubernetes.io/managed-by: nexusctl
