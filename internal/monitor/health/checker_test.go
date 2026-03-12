@@ -189,8 +189,7 @@ func TestLivenessHandler(t *testing.T) {
 
 func TestCommandCheckSuccess(t *testing.T) {
 	check := &CommandCheck{
-		Command: "echo",
-		Args:    []string{"hello"},
+		Command: "/usr/bin/true",
 		Timeout: 5 * time.Second,
 	}
 
@@ -201,7 +200,7 @@ func TestCommandCheckSuccess(t *testing.T) {
 
 func TestCommandCheckFailure(t *testing.T) {
 	check := &CommandCheck{
-		Command: "false",
+		Command: "/usr/bin/false",
 		Timeout: 5 * time.Second,
 	}
 
