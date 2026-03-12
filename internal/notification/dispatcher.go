@@ -334,6 +334,7 @@ type Dispatcher struct {
 	queue     chan *Notification
 	history   []*Notification
 	mu        sync.RWMutex
+	historyMu sync.Mutex
 	workers   int
 }
 
@@ -370,9 +371,13 @@ func (d *Dispatcher) RegisterTemplate(name string, t *Template) {
 func (d *Dispatcher) Send(ctx context.Context, n *Notification) error {
 	d.prepare(n)
 
+	// Resolve channels under read lock, then release before sending or recording.
 	d.mu.RLock()
-	defer d.mu.RUnlock()
-
+	type resolvedCh struct {
+		name string
+		ch   Channel
+	}
+	var resolved []resolvedCh
 	var errs []string
 	for _, chName := range n.Channels {
 		ch, exists := d.channels[chName]
@@ -380,8 +385,14 @@ func (d *Dispatcher) Send(ctx context.Context, n *Notification) error {
 			errs = append(errs, fmt.Sprintf("channel %q not registered", chName))
 			continue
 		}
-		if err := ch.Send(ctx, n); err != nil {
-			errs = append(errs, fmt.Sprintf("%s: %v", chName, err))
+		resolved = append(resolved, resolvedCh{name: chName, ch: ch})
+	}
+	d.mu.RUnlock()
+
+	// Send to each resolved channel outside the lock.
+	for _, rc := range resolved {
+		if err := rc.ch.Send(ctx, n); err != nil {
+			errs = append(errs, fmt.Sprintf("%s: %v", rc.name, err))
 		}
 	}
 
@@ -429,8 +440,8 @@ func (d *Dispatcher) Start(ctx context.Context) {
 
 // History returns a copy of the notification history.
 func (d *Dispatcher) History() []*Notification {
-	d.mu.RLock()
-	defer d.mu.RUnlock()
+	d.historyMu.Lock()
+	defer d.historyMu.Unlock()
 	result := make([]*Notification, len(d.history))
 	copy(result, d.history)
 	return result
@@ -453,8 +464,8 @@ func (d *Dispatcher) prepare(n *Notification) {
 }
 
 func (d *Dispatcher) recordHistory(n *Notification) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
+	d.historyMu.Lock()
+	defer d.historyMu.Unlock()
 	d.history = append(d.history, n)
 }
 
